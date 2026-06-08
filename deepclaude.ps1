@@ -19,6 +19,8 @@ param(
     [string]$Backend,
     [Alias("r")]
     [switch]$Remote,
+    [Alias("s")]
+    [string]$Switch,
     [switch]$Status,
     [switch]$Cost,
     [switch]$Benchmark,
@@ -26,8 +28,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 
-if (-not $Backend -and -not $Status -and -not $Cost -and -not $Benchmark -and -not $Help) {
+if (-not $Backend) {
     $Backend = if ($env:CHEAPCLAUDE_DEFAULT_BACKEND) { $env:CHEAPCLAUDE_DEFAULT_BACKEND } else { "ds" }
 }
 
@@ -55,7 +58,7 @@ $Providers = @{
         url = "https://openrouter.ai/api"
         key = $OpenRouterKey; keyName = "OPENROUTER_API_KEY"
         opus = "deepseek/deepseek-v4-pro"; sonnet = "deepseek/deepseek-v4-pro"
-        haiku = "deepseek/deepseek-v4-pro"; subagent = "deepseek/deepseek-v4-pro"
+        haiku = "deepseek/deepseek-v4-flash"; subagent = "deepseek/deepseek-v4-flash"
     }
     fw = @{
         name = "Fireworks AI"
@@ -71,6 +74,35 @@ $Providers = @{
 function Get-KeyDisplay($k) {
     if (-not $k) { return "MISSING" }
     return "set (****" + $k.Substring($k.Length - [Math]::Min(4, $k.Length)) + ")"
+}
+
+# --- Switch ---
+if ($Switch) {
+    $backendName = switch ($Switch) {
+        { $_ -in @("ds","deepseek") }   { "deepseek" }
+        { $_ -in @("or","openrouter") } { "openrouter" }
+        { $_ -in @("fw","fireworks") }  { "fireworks" }
+        "anthropic"                     { "anthropic" }
+        default                         { $null }
+    }
+    if (-not $backendName) {
+        Write-Host "ERROR: Unknown backend '$Switch'. Use: ds, or, fw, anthropic" -ForegroundColor Red
+        exit 1
+    }
+    $found = $false
+    foreach ($port in 3200..3220) {
+        try {
+            $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/_proxy/mode" -Method Post -Body "backend=$backendName" -TimeoutSec 2
+            Write-Host "  Switched to: $($resp.mode) (was $($resp.previous))" -ForegroundColor Green
+            $found = $true
+            break
+        } catch {}
+    }
+    if (-not $found) {
+        Write-Host "  Proxy not running. Start with: deepclaude" -ForegroundColor Red
+        exit 1
+    }
+    exit 0
 }
 
 # --- Status ---
@@ -111,9 +143,11 @@ if ($Cost) {
 if ($Help) {
     Write-Host "deepclaude - Claude Code with cheap backends"
     Write-Host ""
-    Write-Host "Usage: deepclaude [-b backend] [--status] [--cost] [--benchmark]"
+    Write-Host "Usage: deepclaude [-b backend] [-s backend] [--status] [--cost] [--benchmark]"
     Write-Host ""
     Write-Host "  -b, --backend   ds (default), or, fw, anthropic"
+    Write-Host "  -s, --switch    Switch proxy mid-session (ds, or, fw, anthropic)"
+    Write-Host "  --remote        Remote control mode (browser URL)"
     Write-Host "  --status        Show keys and backends"
     Write-Host "  --cost          Pricing comparison"
     Write-Host "  --benchmark     Latency test"
@@ -124,20 +158,29 @@ if ($Help) {
 if ($Benchmark) {
     Write-Host "`n  Latency Benchmark" -ForegroundColor Cyan
     Write-Host "  ==================" -ForegroundColor DarkGray
-    foreach ($id in @("ds","or","fw")) {
-        $p = $Providers[$id]
-        Write-Host "  $($p.name)..." -NoNewline
-        if (-not $p.key) { Write-Host " SKIP (no key)" -ForegroundColor DarkGray; continue }
-        $useBearer = $id -in @("or","fw")
-        $headers = if ($useBearer) {
-            @{ "Authorization" = "Bearer $($p.key)"; "content-type" = "application/json"; "anthropic-version" = "2023-06-01" }
+
+    $benchmarks = @(
+        @{ id="ds"; name="DeepSeek (direct)";  model="deepseek-v4-pro";                            url="https://api.deepseek.com/anthropic";    useBearer=$false }
+        @{ id="or"; name="OpenRouter";         model="deepseek/deepseek-v4-pro";                   url="https://openrouter.ai/api";            useBearer=$true  }
+        @{ id="fw"; name="Fireworks AI";       model="accounts/fireworks/models/deepseek-v4-pro";  url="https://api.fireworks.ai/inference";    useBearer=$true  }
+        @{ id="an"; name="Anthropic (baseline)"; model="claude-haiku-4-5-20251001";                 url="https://api.anthropic.com";             useBearer=$false }
+    )
+
+    foreach ($b in $benchmarks) {
+        Write-Host "  $($b.name)..." -NoNewline
+        $key = if ($b.id -eq "an") { $env:ANTHROPIC_API_KEY } else { $Providers[$b.id].key }
+        if (-not $key) { Write-Host " SKIP (no key)" -ForegroundColor DarkGray; continue }
+        $headers = if ($b.useBearer) {
+            @{ "Authorization" = "Bearer $key"; "content-type" = "application/json"; "anthropic-version" = "2023-06-01" }
+        } elseif ($b.id -eq "an") {
+            @{ "x-api-key" = $key; "content-type" = "application/json"; "anthropic-version" = "2023-06-01" }
         } else {
-            @{ "x-api-key" = $p.key; "content-type" = "application/json"; "anthropic-version" = "2023-06-01" }
+            @{ "x-api-key" = $key; "content-type" = "application/json"; "anthropic-version" = "2023-06-01" }
         }
-        $body = @{ model = $p.opus; max_tokens = 32; messages = @(@{ role = "user"; content = "Reply: ok" }) } | ConvertTo-Json -Depth 5
+        $body = @{ model = $b.model; max_tokens = 32; messages = @(@{ role = "user"; content = "Reply: ok" }) } | ConvertTo-Json -Depth 5
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
-            $null = Invoke-RestMethod -Uri "$($p.url)/v1/messages" -Method POST -Headers $headers -Body $body -TimeoutSec 30
+            $null = Invoke-RestMethod -Uri "$($b.url)/v1/messages" -Method POST -Headers $headers -Body $body -TimeoutSec 30
             $sw.Stop()
             Write-Host " OK ($($sw.ElapsedMilliseconds)ms)" -ForegroundColor Green
         } catch {
@@ -152,12 +195,11 @@ if ($Benchmark) {
 
 # --- Remote ---
 if ($Remote) {
-    $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     if ($Backend -eq "anthropic") {
         Write-Host "`n  Launching remote control (Anthropic)...`n" -ForegroundColor Cyan
-        foreach ($v in @("ANTHROPIC_BASE_URL","ANTHROPIC_AUTH_TOKEN","ANTHROPIC_DEFAULT_OPUS_MODEL",
-            "ANTHROPIC_DEFAULT_SONNET_MODEL","ANTHROPIC_DEFAULT_HAIKU_MODEL",
-            "CLAUDE_CODE_SUBAGENT_MODEL","CLAUDE_CODE_EFFORT_LEVEL")) {
+        foreach ($v in @("ANTHROPIC_BASE_URL","ANTHROPIC_AUTH_TOKEN","ANTHROPIC_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL","ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL","CLAUDE_CODE_SUBAGENT_MODEL","CLAUDE_CODE_EFFORT_LEVEL")) {
             Remove-Item "Env:$v" -ErrorAction SilentlyContinue
         }
         Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
@@ -197,6 +239,7 @@ if ($Remote) {
     Write-Host "  Launching remote control via $($p.name)...`n" -ForegroundColor Cyan
 
     $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:$proxyPort"
+    $env:ANTHROPIC_MODEL = $p.opus
     $env:ANTHROPIC_DEFAULT_OPUS_MODEL = $p.opus
     $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $p.sonnet
     $env:ANTHROPIC_DEFAULT_HAIKU_MODEL = $p.haiku
@@ -216,11 +259,58 @@ if ($Remote) {
     exit 0
 }
 
+# --- Helper: start proxy and launch claude (for backends that need Bearer auth) ---
+function Start-ProxyAndLaunch($provider, $claudeArgs) {
+    $proxyScript = Join-Path $ScriptDir "proxy\start-proxy.js"
+    $proxyProc = Start-Process -FilePath "node" -ArgumentList $proxyScript,$provider.url,$provider.key -PassThru -WindowStyle Hidden -RedirectStandardOutput "$env:TEMP\deepclaude-proxy-port.txt"
+
+    $tries = 0
+    while ($tries -lt 30) {
+        Start-Sleep -Milliseconds 200
+        $tries++
+        if (Test-Path "$env:TEMP\deepclaude-proxy-port.txt") {
+            $content = Get-Content "$env:TEMP\deepclaude-proxy-port.txt" -ErrorAction SilentlyContinue
+            if ($content) { break }
+        }
+    }
+
+    $proxyPort = (Get-Content "$env:TEMP\deepclaude-proxy-port.txt" -ErrorAction SilentlyContinue | Select-Object -First 1)
+    Remove-Item "$env:TEMP\deepclaude-proxy-port.txt" -ErrorAction SilentlyContinue
+
+    if (-not $proxyPort) {
+        Write-Host "ERROR: Proxy failed to start" -ForegroundColor Red
+        if ($proxyProc -and -not $proxyProc.HasExited) { Stop-Process -Id $proxyProc.Id -Force }
+        exit 1
+    }
+
+    Write-Host "  Proxy on :$proxyPort -> $($provider.url)" -ForegroundColor DarkGray
+    Write-Host ""
+
+    $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:$proxyPort"
+    $env:ANTHROPIC_MODEL = $provider.opus
+    $env:ANTHROPIC_DEFAULT_OPUS_MODEL = $provider.opus
+    $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $provider.sonnet
+    $env:ANTHROPIC_DEFAULT_HAIKU_MODEL = $provider.haiku
+    $env:CLAUDE_CODE_SUBAGENT_MODEL = $provider.subagent
+    $env:CLAUDE_CODE_EFFORT_LEVEL = "max"
+    Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
+    Remove-Item Env:ANTHROPIC_AUTH_TOKEN -ErrorAction SilentlyContinue
+
+    try {
+        & claude @claudeArgs
+    } finally {
+        if ($proxyProc -and -not $proxyProc.HasExited) {
+            Stop-Process -Id $proxyProc.Id -Force -ErrorAction SilentlyContinue
+            Write-Host "  Proxy stopped." -ForegroundColor DarkGray
+        }
+    }
+}
+
 # --- Launch ---
 if ($Backend -eq "anthropic") {
-    foreach ($v in @("ANTHROPIC_BASE_URL","ANTHROPIC_AUTH_TOKEN","ANTHROPIC_DEFAULT_OPUS_MODEL",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL","ANTHROPIC_DEFAULT_HAIKU_MODEL",
-        "CLAUDE_CODE_SUBAGENT_MODEL","CLAUDE_CODE_EFFORT_LEVEL")) {
+    foreach ($v in @("ANTHROPIC_BASE_URL","ANTHROPIC_AUTH_TOKEN","ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL","ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL","CLAUDE_CODE_SUBAGENT_MODEL","CLAUDE_CODE_EFFORT_LEVEL")) {
         Remove-Item "Env:$v" -ErrorAction SilentlyContinue
     }
     Write-Host "`n  Launching Claude Code (normal Anthropic)...`n" -ForegroundColor Cyan
@@ -232,6 +322,16 @@ $p = $Providers[$Backend]
 if (-not $p) { Write-Host "ERROR: Unknown backend '$Backend'. Use: ds, or, fw, anthropic" -ForegroundColor Red; exit 1 }
 if (-not $p.key) { Write-Host "ERROR: $($p.keyName) not set" -ForegroundColor Red; exit 1 }
 
+# OpenRouter and Fireworks need Bearer auth — must use proxy
+if ($Backend -in @("or", "openrouter", "fw", "fireworks")) {
+    Write-Host "`n  Starting model proxy for $($p.name)..." -ForegroundColor Cyan
+    Write-Host "  Endpoint: $($p.url)" -ForegroundColor DarkGray
+    Write-Host "  Model: $($p.opus) (main) + $($p.haiku) (subagents)" -ForegroundColor DarkGray
+    Start-ProxyAndLaunch $p $Args
+    exit 0
+}
+
+# DeepSeek: direct env vars work (endpoint accepts x-api-key)
 Write-Host "`n  Launching Claude Code via $($p.name)..." -ForegroundColor Cyan
 Write-Host "  Endpoint: $($p.url)" -ForegroundColor DarkGray
 Write-Host "  Model: $($p.opus) (main) + $($p.haiku) (subagents)" -ForegroundColor DarkGray

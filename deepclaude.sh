@@ -58,7 +58,7 @@ resolve_backend() {
             [[ -z "$key" ]] && { echo "ERROR: OPENROUTER_API_KEY not set" >&2; exit 1; }
             url="$OPENROUTER_URL"
             opus="deepseek/deepseek-v4-pro"; sonnet="deepseek/deepseek-v4-pro"
-            haiku="deepseek/deepseek-v4-pro"; subagent="deepseek/deepseek-v4-pro"
+            haiku="deepseek/deepseek-v4-flash"; subagent="deepseek/deepseek-v4-flash"
             ;;
         fw|fireworks)
             key="${FIREWORKS_API_KEY:-}"
@@ -78,6 +78,7 @@ resolve_backend() {
 }
 
 set_model_env() {
+    export ANTHROPIC_MODEL="$RESOLVED_OPUS"
     export ANTHROPIC_DEFAULT_OPUS_MODEL="$RESOLVED_OPUS"
     export ANTHROPIC_DEFAULT_SONNET_MODEL="$RESOLVED_SONNET"
     export ANTHROPIC_DEFAULT_HAIKU_MODEL="$RESOLVED_HAIKU"
@@ -151,6 +152,7 @@ show_help() {
     echo "  CHEAPCLAUDE_DEFAULT_BACKEND  Default backend (default: ds)"
 }
 
+# --- Switch ---
 do_switch() {
     local backend="$SWITCH_BACKEND"
     case "$backend" in
@@ -160,30 +162,49 @@ do_switch() {
         anthropic)     backend="anthropic" ;;
         *) echo "ERROR: Unknown backend '$backend'. Use: ds, or, fw, anthropic" >&2; exit 1 ;;
     esac
-    local resp
-    resp=$(curl -sX POST http://127.0.0.1:3200/_proxy/mode -d "backend=$backend" 2>/dev/null) || {
-        echo "  Proxy not running. Start with: deepclaude" >&2; exit 1
-    }
-    echo "  $resp"
+    local port resp
+    for port in $(seq 3200 3220); do
+        resp=$(curl -sX POST "http://127.0.0.1:$port/_proxy/mode" -d "backend=$backend" 2>/dev/null) || continue
+        if echo "$resp" | grep -q '"mode"'; then
+            echo "  Switched to: $(echo "$resp" | grep -o '"mode":"[^"]*"') (was $(echo "$resp" | grep -o '"previous":"[^"]*"'))"
+            return 0
+        fi
+    done
+    echo "  Proxy not running. Start with: deepclaude" >&2
+    exit 1
 }
 
 run_benchmark() {
     echo ""
     echo "  Latency Benchmark (1 request each)"
     echo "  ==================================="
-    for name in deepseek openrouter fireworks; do
-        local url="" key="" model=""
+    for name in deepseek openrouter fireworks anthropic; do
+        local url="" key="" model="" use_bearer=false
         case "$name" in
             deepseek)   url="$DEEPSEEK_URL"; key="${DEEPSEEK_API_KEY:-}"; model="deepseek-v4-pro" ;;
-            openrouter) url="$OPENROUTER_URL"; key="${OPENROUTER_API_KEY:-}"; model="deepseek/deepseek-v4-pro" ;;
-            fireworks)  url="$FIREWORKS_URL"; key="${FIREWORKS_API_KEY:-}"; model="accounts/fireworks/models/deepseek-v4-pro" ;;
+            openrouter) url="$OPENROUTER_URL"; key="${OPENROUTER_API_KEY:-}"; model="deepseek/deepseek-v4-pro"; use_bearer=true ;;
+            fireworks)  url="$FIREWORKS_URL"; key="${FIREWORKS_API_KEY:-}"; model="accounts/fireworks/models/deepseek-v4-pro"; use_bearer=true ;;
+            anthropic)  url="https://api.anthropic.com"; key="${ANTHROPIC_API_KEY:-}"; model="claude-haiku-4-5-20251001" ;;
         esac
         if [[ -z "$key" ]]; then echo "  $name: SKIP (no key)"; continue; fi
         local start_ms=$(date +%s%3N 2>/dev/null || python3 -c 'import time;print(int(time.time()*1000))')
-        local status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$url/v1/messages" \
-            -H "x-api-key: $key" -H "content-type: application/json" -H "anthropic-version: 2023-06-01" \
-            -d "{\"model\":\"$model\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"Reply: ok\"}]}" \
-            --max-time 30 2>/dev/null || echo "timeout")
+        local status
+        if [[ "$use_bearer" == "true" ]]; then
+            status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$url/v1/messages" \
+                -H "authorization: Bearer $key" -H "content-type: application/json" -H "anthropic-version: 2023-06-01" \
+                -d "{\"model\":\"$model\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"Reply: ok\"}]}" \
+                --max-time 30 2>/dev/null || echo "timeout")
+        elif [[ "$name" == "anthropic" ]]; then
+            status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$url/v1/messages" \
+                -H "x-api-key: $key" -H "content-type: application/json" -H "anthropic-version: 2023-06-01" \
+                -d "{\"model\":\"$model\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"Reply: ok\"}]}" \
+                --max-time 30 2>/dev/null || echo "timeout")
+        else
+            status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$url/v1/messages" \
+                -H "x-api-key: $key" -H "content-type: application/json" -H "anthropic-version: 2023-06-01" \
+                -d "{\"model\":\"$model\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"Reply: ok\"}]}" \
+                --max-time 30 2>/dev/null || echo "timeout")
+        fi
         local end_ms=$(date +%s%3N 2>/dev/null || python3 -c 'import time;print(int(time.time()*1000))')
         local elapsed=$((end_ms - start_ms))
         if [[ "$status" == "200" ]]; then
@@ -198,7 +219,7 @@ run_benchmark() {
 launch_claude() {
     if [[ "$BACKEND" == "anthropic" ]]; then
         echo "  Launching Claude Code (normal Anthropic backend)..."
-        unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN
+        unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL
         unset ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL
         unset ANTHROPIC_DEFAULT_HAIKU_MODEL CLAUDE_CODE_SUBAGENT_MODEL
         unset CLAUDE_CODE_EFFORT_LEVEL
@@ -207,6 +228,14 @@ launch_claude() {
 
     resolve_backend
 
+    # OpenRouter and Fireworks need Bearer auth — must use proxy
+    case "$BACKEND" in
+        or|openrouter|fw|fireworks)
+            launch_via_proxy "$@"
+            return ;;
+    esac
+
+    # DeepSeek: direct env vars work (endpoint accepts x-api-key)
     echo "  Launching Claude Code via $BACKEND..."
     echo "  Endpoint: $RESOLVED_URL"
     echo "  Model: $RESOLVED_OPUS (main) + $RESOLVED_HAIKU (subagents)"
@@ -220,19 +249,11 @@ launch_claude() {
     exec claude "$@"
 }
 
-launch_remote() {
-    if [[ "$BACKEND" == "anthropic" ]]; then
-        echo "  Launching remote control (Anthropic)..."
-        unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN
-        unset ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL
-        unset ANTHROPIC_DEFAULT_HAIKU_MODEL CLAUDE_CODE_SUBAGENT_MODEL
-        unset CLAUDE_CODE_EFFORT_LEVEL ANTHROPIC_API_KEY
-        exec claude remote-control "$@"
-    fi
-
-    resolve_backend
-
+launch_via_proxy() {
     echo "  Starting model proxy for $BACKEND..."
+    echo "  Endpoint: $RESOLVED_URL"
+    echo "  Model: $RESOLVED_OPUS (main) + $RESOLVED_HAIKU (subagents)"
+    echo ""
 
     local port_file
     port_file=$(mktemp)
@@ -256,7 +277,53 @@ launch_remote() {
     rm -f "$port_file"
 
     echo "  Proxy on :$proxy_port -> $RESOLVED_URL"
-    echo "  Launching remote control via $BACKEND..."
+    echo ""
+
+    export ANTHROPIC_BASE_URL="http://127.0.0.1:$proxy_port"
+    set_model_env
+    unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
+
+    claude "$@"
+}
+
+launch_remote() {
+    if [[ "$BACKEND" == "anthropic" ]]; then
+        echo "  Launching remote control (Anthropic)..."
+        unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL
+        unset ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL
+        unset ANTHROPIC_DEFAULT_HAIKU_MODEL CLAUDE_CODE_SUBAGENT_MODEL
+        unset CLAUDE_CODE_EFFORT_LEVEL ANTHROPIC_API_KEY
+        exec claude remote-control "$@"
+    fi
+
+    resolve_backend
+
+    echo "  Starting model proxy for $BACKEND..."
+    echo "  Endpoint: $RESOLVED_URL"
+    echo "  Model: $RESOLVED_OPUS (main) + $RESOLVED_HAIKU (subagents)"
+
+    local port_file
+    port_file=$(mktemp)
+    node "$SCRIPT_DIR/proxy/start-proxy.js" "$RESOLVED_URL" "$RESOLVED_KEY" > "$port_file" &
+    PROXY_PID=$!
+
+    local tries=0
+    while [[ ! -s "$port_file" ]] && [[ $tries -lt 30 ]]; do
+        sleep 0.2
+        tries=$((tries + 1))
+    done
+
+    if [[ ! -s "$port_file" ]]; then
+        echo "ERROR: Proxy failed to start" >&2
+        rm -f "$port_file"
+        exit 1
+    fi
+
+    local proxy_port
+    proxy_port=$(head -1 "$port_file")
+    rm -f "$port_file"
+
+    echo "  Proxy on :$proxy_port -> $RESOLVED_URL"
     echo ""
 
     export ANTHROPIC_BASE_URL="http://127.0.0.1:$proxy_port"

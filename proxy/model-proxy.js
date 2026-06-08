@@ -7,22 +7,48 @@ const ANTHROPIC_FALLBACK = 'https://api.anthropic.com';
 const MODEL_PATHS = ['/v1/messages'];
 const REQUEST_TIMEOUT_MS = 5 * 60 * 1000; // 5 min per request
 
-const MODEL_REMAP = {
-    deepseek: {
-        'claude-opus-4-6':    'deepseek-v4-pro',
-        'claude-opus-4-7':    'deepseek-v4-pro',
-        'claude-sonnet-4-6':  'deepseek-v4-flash',
-        'claude-sonnet-4-5-20250929': 'deepseek-v4-flash',
-        'claude-haiku-4-5-20251001':  'deepseek-v4-flash',
-    },
-    openrouter: {
-        'claude-opus-4-6':    'deepseek/deepseek-v4-pro',
-        'claude-opus-4-7':    'deepseek/deepseek-v4-pro',
-        'claude-sonnet-4-6':  'deepseek/deepseek-v4-flash',
-        'claude-sonnet-4-5-20250929': 'deepseek/deepseek-v4-flash',
-        'claude-haiku-4-5-20251001':  'deepseek/deepseek-v4-flash',
-    },
+// Hop-by-hop headers that must NOT be forwarded by proxies
+const HOP_BY_HOP = new Set([
+    'connection', 'keep-alive', 'transfer-encoding',
+    'te', 'trailer', 'upgrade', 'proxy-authorization',
+    'proxy-authenticate', 'proxy-connection',
+]);
+
+// Full model IDs that Claude Code may send (including dated versions).
+// Grouped by family so we don't miss a new variant.
+const OPUS_SONNET_TARGETS = {
+    deepseek:   { opus: 'deepseek-v4-pro',  sonnet: 'deepseek-v4-pro',  haiku: 'deepseek-v4-flash' },
+    openrouter: { opus: 'deepseek/deepseek-v4-pro', sonnet: 'deepseek/deepseek-v4-pro',  haiku: 'deepseek/deepseek-v4-flash' },
+    fireworks:  { opus: 'accounts/fireworks/models/deepseek-v4-pro', sonnet: 'accounts/fireworks/models/deepseek-v4-pro', haiku: 'accounts/fireworks/models/deepseek-v4-pro' },
 };
+
+function buildRemap(targets) {
+    const m = {};
+    for (const id of [
+        // Opus 4.7
+        'claude-opus-4-7', 'claude-opus-4-7-20250610',
+        // Opus 4.6
+        'claude-opus-4-6', 'claude-opus-4-6-20250819',
+        // Opus 4.5
+        'claude-opus-4-5', 'claude-opus-4-5-20250929',
+        // Sonnet 4.6
+        'claude-sonnet-4-6', 'claude-sonnet-4-6-20250708',
+        // Sonnet 4.5
+        'claude-sonnet-4-5', 'claude-sonnet-4-5-20250929',
+        // Haiku 4.5
+        'claude-haiku-4-5', 'claude-haiku-4-5-20251001',
+    ]) {
+        if (id.startsWith('claude-opus'))  m[id] = targets.opus;
+        if (id.startsWith('claude-sonnet')) m[id] = targets.sonnet;
+        if (id.startsWith('claude-haiku')) m[id] = targets.haiku;
+    }
+    return m;
+}
+
+const MODEL_REMAP = {};
+for (const [backend, targets] of Object.entries(OPUS_SONNET_TARGETS)) {
+    MODEL_REMAP[backend] = buildRemap(targets);
+}
 
 const PRICING_PER_M = {
     deepseek:   { input: 0.44,  output: 0.87 },
@@ -218,6 +244,7 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
                         mode: state.mode,
                         uptime: Math.round((Date.now() - t0Global) / 1000),
                         requests: reqCount,
+                        cost: getCostSummary(),
                     }));
                     return;
                 }
@@ -299,6 +326,11 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
 
             const headers = { ...clientReq.headers, host: dest.host };
             delete headers['content-length'];
+
+            // Strip hop-by-hop headers that must not be forwarded
+            for (const key of Object.keys(headers)) {
+                if (HOP_BY_HOP.has(key.toLowerCase())) delete headers[key];
+            }
 
             if (isModelCall) {
                 delete headers['authorization'];

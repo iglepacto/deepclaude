@@ -15,6 +15,7 @@ BACKEND="${CHEAPCLAUDE_DEFAULT_BACKEND:-ds}"
 ACTION="launch"
 SWITCH_BACKEND=""
 PROXY_PID=""
+WINDOW=false
 
 # --- Parse args ---
 while [[ $# -gt 0 ]]; do
@@ -22,6 +23,7 @@ while [[ $# -gt 0 ]]; do
         --backend|-b) BACKEND="$2"; shift 2 ;;
         --switch|-s)  ACTION="switch"; SWITCH_BACKEND="$2"; shift 2 ;;
         --remote|-r)  ACTION="remote"; shift ;;
+        --window|-w)  WINDOW=true; shift ;;
         --status)     ACTION="status"; shift ;;
         --cost)       ACTION="cost"; shift ;;
         --benchmark)  ACTION="benchmark"; shift ;;
@@ -139,6 +141,7 @@ show_help() {
     echo "Options:"
     echo "  -b, --backend <ds|or|fw|anthropic>  Backend (default: ds)"
     echo "  -r, --remote                        Remote control mode (browser URL)"
+    echo "  -w, --window                        Launch in a new terminal window"
     echo "  --status                             Show keys and backends"
     echo "  --cost                               Pricing comparison"
     echo "  --benchmark                          Latency test"
@@ -333,7 +336,36 @@ launch_remote() {
     claude remote-control "$@"
 }
 
+launch_in_window() {
+    local script_path="$SCRIPT_DIR/deepclaude.sh"
+    local re_args=()
+    re_args+=("--backend" "$BACKEND")
+    [[ "$ACTION" == "remote" ]] && re_args+=("--remote")
+
+    echo "  Opening new terminal window..."
+    echo "  Backend: $BACKEND"
+    echo ""
+
+    if command -v gnome-terminal &>/dev/null; then
+        gnome-terminal -- bash "$script_path" "${re_args[@]}" "$@"
+    elif command -v xterm &>/dev/null; then
+        xterm -e bash "$script_path" "${re_args[@]}" "$@" &
+    elif command -v xdg-terminal &>/dev/null; then
+        xdg-terminal -- bash "$script_path" "${re_args[@]}" "$@"
+    elif [[ "$OSTYPE" == "darwin"* ]]; then
+        open -a Terminal "$script_path" --args "${re_args[@]}" "$@"
+    else
+        echo "ERROR: No terminal emulator found (gnome-terminal, xterm, or xdg-terminal)" >&2
+        exit 1
+    fi
+}
+
 # --- Main ---
+if [[ "$WINDOW" == "true" ]]; then
+    launch_in_window "$@"
+    exit 0
+fi
+
 case "$ACTION" in
     status)    show_status ;;
     cost)      show_cost ;;

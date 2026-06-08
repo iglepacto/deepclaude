@@ -4,11 +4,12 @@
 
 .USAGE
     deepclaude                      # DeepSeek V4 Pro (default)
+    deepclaude -w                   # Launch in a new terminal window
     deepclaude --backend or         # OpenRouter (cheapest)
     deepclaude --backend fw         # Fireworks AI (fastest)
     deepclaude --backend anthropic  # Normal Claude Code
     deepclaude --remote             # Remote control + DeepSeek (browser URL)
-    deepclaude --remote -b or       # Remote control + OpenRouter
+    deepclaude --remote -w          # Remote control in new window
     deepclaude --status             # Show keys and backends
     deepclaude --cost               # Pricing comparison
     deepclaude --benchmark          # Latency test
@@ -21,6 +22,8 @@ param(
     [switch]$Remote,
     [Alias("s")]
     [string]$Switch,
+    [Alias("w")]
+    [switch]$Window,
     [switch]$Status,
     [switch]$Cost,
     [switch]$Benchmark,
@@ -29,6 +32,17 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+
+# Build args for window re-invocation (without --window to avoid recursion)
+$ReinvokeArgs = [System.Collections.ArrayList]@()
+if ($Backend)  { $ReinvokeArgs.Add("-b") | Out-Null; $ReinvokeArgs.Add($Backend) | Out-Null }
+if ($Remote)   { $ReinvokeArgs.Add("-r") | Out-Null }
+if ($Switch)   { $ReinvokeArgs.Add("-s") | Out-Null; $ReinvokeArgs.Add($Switch) | Out-Null }
+if ($Status)   { $ReinvokeArgs.Add("--status") | Out-Null }
+if ($Cost)     { $ReinvokeArgs.Add("--cost") | Out-Null }
+if ($Benchmark){ $ReinvokeArgs.Add("--benchmark") | Out-Null }
+if ($Help)     { $ReinvokeArgs.Add("--help") | Out-Null }
+if ($Args.Count -gt 0) { $ReinvokeArgs.Add("--") | Out-Null; foreach ($a in $Args) { $ReinvokeArgs.Add($a) | Out-Null } }
 
 if (-not $Backend) {
     $Backend = if ($env:CHEAPCLAUDE_DEFAULT_BACKEND) { $env:CHEAPCLAUDE_DEFAULT_BACKEND } else { "ds" }
@@ -143,10 +157,11 @@ if ($Cost) {
 if ($Help) {
     Write-Host "deepclaude - Claude Code with cheap backends"
     Write-Host ""
-    Write-Host "Usage: deepclaude [-b backend] [-s backend] [--status] [--cost] [--benchmark]"
+    Write-Host "Usage: deepclaude [-b backend] [-s backend] [-w] [--status] [--cost] [--benchmark]"
     Write-Host ""
     Write-Host "  -b, --backend   ds (default), or, fw, anthropic"
     Write-Host "  -s, --switch    Switch proxy mid-session (ds, or, fw, anthropic)"
+    Write-Host "  -w, --window    Launch in a new terminal window"
     Write-Host "  --remote        Remote control mode (browser URL)"
     Write-Host "  --status        Show keys and backends"
     Write-Host "  --cost          Pricing comparison"
@@ -306,7 +321,37 @@ function Start-ProxyAndLaunch($provider, $claudeArgs) {
     }
 }
 
+# --- Helper: launch this script in a new PowerShell window ---
+function Start-DeepClaudeWindow {
+    $scriptPath = Join-Path $ScriptDir "deepclaude.ps1"
+    $procArgs = @(
+        "-NoExit",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $scriptPath
+    ) + $ReinvokeArgs
+    Write-Host "  Opening new terminal window..." -ForegroundColor Cyan
+    Start-Process powershell.exe -ArgumentList $procArgs
+}
+
 # --- Launch ---
+if ($Window) {
+    # Re-invoke in a new window without --window flag
+    if ($Remote) {
+        Write-Host "`n  deepclaude --remote --window" -ForegroundColor Cyan
+        Write-Host "  Backend: $Backend" -ForegroundColor DarkGray
+        Write-Host "  Opening remote control in new window...`n" -ForegroundColor Cyan
+    } else {
+        $p = $Providers[$Backend]
+        if (-not $p) { Write-Host "ERROR: Unknown backend '$Backend'. Use: ds, or, fw, anthropic" -ForegroundColor Red; exit 1 }
+        if ($Backend -ne "anthropic" -and -not $p.key) { Write-Host "ERROR: $($p.keyName) not set" -ForegroundColor Red; exit 1 }
+        Write-Host "`n  deepclaude --window (new terminal)" -ForegroundColor Cyan
+        Write-Host "  Backend: $($p.name)" -ForegroundColor DarkGray
+        Write-Host "  Model: $($p.opus)`n" -ForegroundColor DarkGray
+    }
+    Start-DeepClaudeWindow
+    exit 0
+}
+
 if ($Backend -eq "anthropic") {
     foreach ($v in @("ANTHROPIC_BASE_URL","ANTHROPIC_AUTH_TOKEN","ANTHROPIC_MODEL",
         "ANTHROPIC_DEFAULT_OPUS_MODEL","ANTHROPIC_DEFAULT_SONNET_MODEL",

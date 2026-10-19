@@ -1,0 +1,39 @@
+# --- Basura de otros proyectos / binarios extraídos por error ---
+/.bun
+/.data
+/.fptable
+/.pdata
+/.rdata
+/.reloc
+/.rsrc/
+/.rsrc_1
+/.text
+/.tls
+/CERTIFICATE
+/_RDATA
+/__DATA,_
+
+# --- Archivos sueltos de otros proyectos (ScriptCase, DTE, etc.) ---
+/TEMPORAL/
+/blank_*.php
+/body*.json
+/models.json
+/cola_*.txt
+/dte*.xml
+/deepclaude-simple*.ps1
+/rendi_doctos.png
+/usuarios.png
+/sync_apps_post12.*
+/Screenshot_*.png
+/Screenshot_*.jpg
+
+# --- Configuración local de Claude Code ---
+/.claude/
+
+# --- Genéricos ---
+node_modules/
+.env
+.env.*
+*.log
+.DS_Store
+Thumbs.db

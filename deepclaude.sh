@@ -263,20 +263,20 @@ launch_via_proxy() {
     node "$SCRIPT_DIR/proxy/start-proxy.js" "$RESOLVED_URL" "$RESOLVED_KEY" > "$port_file" &
     PROXY_PID=$!
 
+    # The proxy prints a banner before the port; only accept the numeric line.
+    local proxy_port=""
     local tries=0
-    while [[ ! -s "$port_file" ]] && [[ $tries -lt 30 ]]; do
+    while [[ -z "$proxy_port" ]] && [[ $tries -lt 30 ]]; do
         sleep 0.2
         tries=$((tries + 1))
+        proxy_port=$(grep -E '^[0-9]+$' "$port_file" 2>/dev/null | head -1)
     done
 
-    if [[ ! -s "$port_file" ]]; then
+    if [[ -z "$proxy_port" ]]; then
         echo "ERROR: Proxy failed to start" >&2
         rm -f "$port_file"
         exit 1
     fi
-
-    local proxy_port
-    proxy_port=$(head -1 "$port_file")
     rm -f "$port_file"
 
     echo "  Proxy on :$proxy_port -> $RESOLVED_URL"
@@ -310,20 +310,20 @@ launch_remote() {
     node "$SCRIPT_DIR/proxy/start-proxy.js" "$RESOLVED_URL" "$RESOLVED_KEY" > "$port_file" &
     PROXY_PID=$!
 
+    # The proxy prints a banner before the port; only accept the numeric line.
+    local proxy_port=""
     local tries=0
-    while [[ ! -s "$port_file" ]] && [[ $tries -lt 30 ]]; do
+    while [[ -z "$proxy_port" ]] && [[ $tries -lt 30 ]]; do
         sleep 0.2
         tries=$((tries + 1))
+        proxy_port=$(grep -E '^[0-9]+$' "$port_file" 2>/dev/null | head -1)
     done
 
-    if [[ ! -s "$port_file" ]]; then
+    if [[ -z "$proxy_port" ]]; then
         echo "ERROR: Proxy failed to start" >&2
         rm -f "$port_file"
         exit 1
     fi
-
-    local proxy_port
-    proxy_port=$(head -1 "$port_file")
     rm -f "$port_file"
 
     echo "  Proxy on :$proxy_port -> $RESOLVED_URL"

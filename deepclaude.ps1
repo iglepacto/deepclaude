@@ -31,6 +31,24 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# --- Silence the "npm -> native installer" migration banner ---
+# We intentionally run Claude Code from the npm package (see claude() below),
+# so suppress the deprecation notice it prints at startup.
+$env:DISABLE_INSTALLATION_CHECKS = "1"
+# --- Locate the Claude Code entry point (new native layout first) ---
+function claude {
+    $claudeBin = @(
+        "$env:APPDATA\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe",
+        "$env:APPDATA\npm\node_modules\@anthropic-ai\claude-code\cli.js",
+        "$env:APPDATA\npm\node_modules\@anthropic-ai\claude-code\dist\cli.js",
+        "$env:APPDATA\npm\node_modules\@anthropic-ai\claude-code\dist\index.js"
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $claudeBin) {
+        Write-Host "ERROR: Cannot find Claude Code entry point." -ForegroundColor Red
+        exit 1
+    }
+    & $claudeBin @args
+}
 $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 
 # Build args for window re-invocation (without --window to avoid recursion)
@@ -83,6 +101,13 @@ $Providers = @{
         haiku = "accounts/fireworks/models/deepseek-v4-pro"
         subagent = "accounts/fireworks/models/deepseek-v4-pro"
     }
+    qw = @{
+        name = "Qwen (via OpenRouter)"
+        url = "https://openrouter.ai/api"
+        key = $OpenRouterKey; keyName = "OPENROUTER_API_KEY"
+        opus = "qwen/qwen3-coder-next"; sonnet = "qwen/qwen3-coder-next"
+        haiku = "qwen/qwen3-coder-next"; subagent = "qwen/qwen3-coder-next"
+    }
 }
 
 function Get-KeyDisplay($k) {
@@ -131,6 +156,7 @@ if ($Status) {
     Write-Host "    deepclaude              # DeepSeek V4 Pro (default)"
     Write-Host "    deepclaude -b or        # OpenRouter (cheapest)"
     Write-Host "    deepclaude -b fw        # Fireworks AI (fastest)"
+    Write-Host "    deepclaude -b qw        # Qwen3-Coder (via OpenRouter)"
     Write-Host "    deepclaude -b anthropic # Normal Claude Code"
     Write-Host ""
     exit 0
@@ -159,7 +185,7 @@ if ($Help) {
     Write-Host ""
     Write-Host "Usage: deepclaude [-b backend] [-s backend] [-w] [--status] [--cost] [--benchmark]"
     Write-Host ""
-    Write-Host "  -b, --backend   ds (default), or, fw, anthropic"
+    Write-Host "  -b, --backend   ds (default), or, fw, qw, anthropic"
     Write-Host "  -s, --switch    Switch proxy mid-session (ds, or, fw, anthropic)"
     Write-Host "  -w, --window    Launch in a new terminal window"
     Write-Host "  --remote        Remote control mode (browser URL)"
@@ -231,17 +257,16 @@ if ($Remote) {
     $proxyScript = Join-Path $ScriptDir "proxy\start-proxy.js"
     $proxyProc = Start-Process -FilePath "node" -ArgumentList $proxyScript,$p.url,$p.key -PassThru -WindowStyle Hidden -RedirectStandardOutput "$env:TEMP\deepclaude-proxy-port.txt"
 
+    # The proxy prints a banner before the port; only accept the numeric line.
+    $proxyPort = $null
     $tries = 0
     while ($tries -lt 30) {
         Start-Sleep -Milliseconds 200
         $tries++
-        if (Test-Path "$env:TEMP\deepclaude-proxy-port.txt") {
-            $content = Get-Content "$env:TEMP\deepclaude-proxy-port.txt" -ErrorAction SilentlyContinue
-            if ($content) { break }
-        }
+        $proxyPort = Get-Content "$env:TEMP\deepclaude-proxy-port.txt" -ErrorAction SilentlyContinue |
+            Where-Object { $_ -match '^\d+$' } | Select-Object -First 1
+        if ($proxyPort) { break }
     }
-
-    $proxyPort = (Get-Content "$env:TEMP\deepclaude-proxy-port.txt" -ErrorAction SilentlyContinue | Select-Object -First 1)
     Remove-Item "$env:TEMP\deepclaude-proxy-port.txt" -ErrorAction SilentlyContinue
 
     if (-not $proxyPort) {
@@ -279,17 +304,16 @@ function Start-ProxyAndLaunch($provider, $claudeArgs) {
     $proxyScript = Join-Path $ScriptDir "proxy\start-proxy.js"
     $proxyProc = Start-Process -FilePath "node" -ArgumentList $proxyScript,$provider.url,$provider.key -PassThru -WindowStyle Hidden -RedirectStandardOutput "$env:TEMP\deepclaude-proxy-port.txt"
 
+    # The proxy prints a banner before the port; only accept the numeric line.
+    $proxyPort = $null
     $tries = 0
     while ($tries -lt 30) {
         Start-Sleep -Milliseconds 200
         $tries++
-        if (Test-Path "$env:TEMP\deepclaude-proxy-port.txt") {
-            $content = Get-Content "$env:TEMP\deepclaude-proxy-port.txt" -ErrorAction SilentlyContinue
-            if ($content) { break }
-        }
+        $proxyPort = Get-Content "$env:TEMP\deepclaude-proxy-port.txt" -ErrorAction SilentlyContinue |
+            Where-Object { $_ -match '^\d+$' } | Select-Object -First 1
+        if ($proxyPort) { break }
     }
-
-    $proxyPort = (Get-Content "$env:TEMP\deepclaude-proxy-port.txt" -ErrorAction SilentlyContinue | Select-Object -First 1)
     Remove-Item "$env:TEMP\deepclaude-proxy-port.txt" -ErrorAction SilentlyContinue
 
     if (-not $proxyPort) {

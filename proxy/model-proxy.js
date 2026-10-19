@@ -163,7 +163,10 @@ export function startModelProxy({ targetUrl, apiKey, startPort = 3200, backends,
                 };
             }
         }
-        const initialName = defaultMode || (backends ? 'anthropic' : null);
+        // Legacy mode (targetUrl + apiKey, no explicit mode) must route the
+        // model calls to that target. Defaulting to 'anthropic' here sent
+        // every request to api.anthropic.com with no key.
+        const initialName = defaultMode || (backends ? '_single' : null);
         const startBackend = initialName && initialName !== 'anthropic' && allBackends[initialName];
 
         const state = {

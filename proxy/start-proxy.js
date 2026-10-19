@@ -24,7 +24,6 @@ if (targetUrl && apiKey) {
         targetUrl,
         apiKey,
         backends: hasBackends ? backends : undefined,
-        defaultMode: hasBackends ? undefined : undefined,
     });
     console.log(port);
 } else {
